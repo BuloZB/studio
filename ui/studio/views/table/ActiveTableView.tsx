@@ -54,6 +54,7 @@ import { useSorting } from "../../../hooks/use-sorting";
 import { useStreams } from "../../../hooks/use-streams";
 import { useTableUiState } from "../../../hooks/use-table-ui-state";
 import { useUiState } from "../../../hooks/use-ui-state";
+import { randomUUID } from "../../../lib/random-uuid";
 import { cn } from "../../../lib/utils";
 import {
   Cell,
@@ -106,6 +107,7 @@ import {
 import {
   getNextInfinitePageRowTarget,
   INFINITE_SCROLL_BATCH_SIZE,
+  resolveVisibleTableWindow,
 } from "./infinite-scroll";
 import {
   InlineTableFilterAddButton,
@@ -205,45 +207,71 @@ export function ActiveTableView(_props: ViewProps) {
       schemaVersion: sqlEditorSchema.version,
     };
   }, [adapter, sqlEditorSchema.dialect, sqlEditorSchema.version]);
+  // Single source of truth for the active table query scope — with infinite
+  // scroll enabled that is the grown `pageIndex: 0` window, not the paginated
+  // page. The row mutation hooks (update/insert/delete) receive the visible
+  // window's query props derived from this below, so they always target the
+  // rows collection the grid displays.
+  const activeTableQueryProps = useMemo(
+    () => ({
+      pageIndex: isInfiniteScrollEnabled ? 0 : paginationState.pageIndex,
+      pageSize: isInfiniteScrollEnabled
+        ? INFINITE_SCROLL_BATCH_SIZE * loadedInfinitePageCount
+        : paginationState.pageSize,
+      sortOrder: sortingState,
+      filter: appliedFilter,
+      searchScope: supportsFullTableSearch
+        ? ("row" as const)
+        : ("table" as const),
+      searchTerm: activeRowSearchTerm,
+    }),
+    [
+      activeRowSearchTerm,
+      appliedFilter,
+      isInfiniteScrollEnabled,
+      loadedInfinitePageCount,
+      paginationState.pageIndex,
+      paginationState.pageSize,
+      sortingState,
+      supportsFullTableSearch,
+    ],
+  );
   const {
     data,
     isFetching,
     refetch: refetchActiveTable,
-  } = useActiveTableQuery({
-    pageIndex: isInfiniteScrollEnabled ? 0 : paginationState.pageIndex,
-    pageSize: isInfiniteScrollEnabled
-      ? INFINITE_SCROLL_BATCH_SIZE * loadedInfinitePageCount
-      : paginationState.pageSize,
-    sortOrder: sortingState,
-    filter: appliedFilter,
-    searchScope: supportsFullTableSearch ? "row" : "table",
-    searchTerm: activeRowSearchTerm,
-  });
+  } = useActiveTableQuery(activeTableQueryProps);
   const [stableInfiniteData, setStableInfiniteData] = useState<{
     data: NonNullable<typeof data>;
     key: string;
+    queryProps: typeof activeTableQueryProps;
   } | null>(null);
-  const visibleData = useMemo(() => {
-    if (!isInfiniteScrollEnabled) {
-      return data;
-    }
-
-    if (
-      isFetching &&
-      (data == null || data.rows.length === 0) &&
-      stableInfiniteData?.key === infiniteScrollResetKey
-    ) {
-      return stableInfiniteData.data;
-    }
-
-    return data;
-  }, [
-    data,
-    infiniteScrollResetKey,
-    isFetching,
-    isInfiniteScrollEnabled,
-    stableInfiniteData,
-  ]);
+  // The visible window pairs the displayed rows with the query props of the
+  // scope they were loaded from. While a grown infinite-scroll window is
+  // fetching, both stay pinned to the previous settled window and swap over
+  // atomically once the grown query finishes, so saving or deleting during
+  // the transition still targets the collection holding the visible rows.
+  const visibleWindow = useMemo(
+    () =>
+      resolveVisibleTableWindow({
+        activeData: data,
+        activeQueryProps: activeTableQueryProps,
+        isFetching,
+        isInfiniteScrollEnabled,
+        resetKey: infiniteScrollResetKey,
+        stableWindow: stableInfiniteData,
+      }),
+    [
+      activeTableQueryProps,
+      data,
+      infiniteScrollResetKey,
+      isFetching,
+      isInfiniteScrollEnabled,
+      stableInfiniteData,
+    ],
+  );
+  const visibleData = visibleWindow.data;
+  const mutationQueryProps = visibleWindow.queryProps;
 
   useEffect(() => {
     if (!isInfiniteScrollEnabled || !data) {
@@ -269,9 +297,11 @@ export function ActiveTableView(_props: ViewProps) {
       return {
         data,
         key: infiniteScrollResetKey,
+        queryProps: activeTableQueryProps,
       };
     });
   }, [
+    activeTableQueryProps,
     data,
     infiniteScrollResetKey,
     isFetching,
@@ -284,7 +314,7 @@ export function ActiveTableView(_props: ViewProps) {
     isSelecting,
     rowSelectionState,
     setRowSelectionState,
-  } = useSelection(visibleData);
+  } = useSelection(visibleData, mutationQueryProps);
   const { streams } = useStreams();
   const { tableUiState, updateTableUiState } = useTableUiState({
     editingFilter,
@@ -543,8 +573,8 @@ export function ActiveTableView(_props: ViewProps) {
     (column) => column.pkPosition != null,
   );
   const isInserting = useIsInserting();
-  const insert = useActiveTableInsert();
-  const updateMany = useActiveTableUpdateMany();
+  const insert = useActiveTableInsert(mutationQueryProps);
+  const updateMany = useActiveTableUpdateMany(mutationQueryProps);
   const pageCount = getPageCount(
     visibleData?.filteredRowCount ?? Infinity,
     paginationState.pageSize,
@@ -1765,6 +1795,7 @@ export function ActiveTableView(_props: ViewProps) {
         rowSelectionState={rowSelectionState}
         selectionScopeKey={selectionScopeKey}
         sortingState={sortingState}
+        totalRowCount={visibleData?.filteredRowCount}
       />
       <BinaryAlertDialog
         onOpenChange={setDeleteDialogOpen}
@@ -1856,7 +1887,7 @@ function createEditorCellKey(args: {
 
 function createEmptyStagedRowDraft(): Record<string, unknown> {
   return {
-    [STAGED_ROW_DRAFT_ID_KEY]: crypto.randomUUID(),
+    [STAGED_ROW_DRAFT_ID_KEY]: randomUUID(),
   };
 }
 

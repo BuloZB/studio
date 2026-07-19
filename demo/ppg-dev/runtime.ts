@@ -2,13 +2,20 @@ import { startPrismaDevServer } from "@prisma/dev";
 import type { Sql } from "postgres";
 import postgres from "postgres";
 
-import { createPostgresJSExecutor } from "../../data/postgresjs";
+import {
+  createPostgresJSConnectionConfig,
+  createPostgresJSExecutor,
+} from "../../data/postgresjs";
 import {
   type DemoRuntimeOptions,
   hasExternalDatabaseUrl,
   hasExternalStreamsServerUrl,
 } from "./runtime-options";
 import { seedDatabase } from "./seed-database";
+import {
+  seedObservabilityStreams,
+  startObservabilityStreamTicker,
+} from "./seed-streams";
 
 type PrismaDevServer = Awaited<ReturnType<typeof startPrismaDevServer>>;
 type PostgresExecutor = ReturnType<typeof createPostgresJSExecutor>;
@@ -35,6 +42,8 @@ interface DemoRuntimeDependencies {
   createPostgresExecutor?: typeof createPostgresJSExecutor;
   createSeededTimestamp?: () => string;
   seedDatabase?: typeof seedDatabase;
+  seedObservabilityStreams?: typeof seedObservabilityStreams;
+  startObservabilityStreamTicker?: typeof startObservabilityStreamTicker;
   startPrismaDevServer?: typeof startPrismaDevServer;
 }
 
@@ -45,13 +54,25 @@ export async function startDemoRuntime(
   const cleanupCallbacks: Array<() => Promise<void> | void> = [];
   const createPostgresClient =
     dependencies.createPostgresClient ??
-    ((connectionString, clientOptions) =>
-      postgres(connectionString, clientOptions));
+    ((connectionString, clientOptions) => {
+      const connectionConfig =
+        createPostgresJSConnectionConfig(connectionString);
+
+      return postgres(connectionConfig.connectionString, {
+        ...clientOptions,
+        ...connectionConfig.options,
+      });
+    });
   const createExecutor =
     dependencies.createPostgresExecutor ?? createPostgresJSExecutor;
   const createSeededTimestamp =
     dependencies.createSeededTimestamp ?? (() => new Date().toISOString());
   const seedDatabaseImpl = dependencies.seedDatabase ?? seedDatabase;
+  const seedObservabilityStreamsImpl =
+    dependencies.seedObservabilityStreams ?? seedObservabilityStreams;
+  const startObservabilityStreamTickerImpl =
+    dependencies.startObservabilityStreamTicker ??
+    startObservabilityStreamTicker;
   const startPrismaDevServerImpl =
     dependencies.startPrismaDevServer ?? startPrismaDevServer;
 
@@ -93,12 +114,41 @@ export async function startDemoRuntime(
     };
   }
 
+  // The observability demo streams receive appends every few seconds, which
+  // would keep the local Streams server's WAL search overlay permanently
+  // outside its default 5s quiet period and make fresh events unsearchable.
+  process.env.DS_SEARCH_WAL_OVERLAY_QUIET_MS ??= "250";
+
   const prismaDevServer = await startPrismaDevServerImpl({
     name: `studio-ppg-demo-${process.pid}`,
   });
   cleanupCallbacks.push(() => prismaDevServer.close());
 
-  await seedDatabaseImpl(prismaDevServer.database.connectionString);
+  try {
+    await seedDatabaseImpl(prismaDevServer.database.connectionString);
+
+    const localStreamsServerUrl =
+      prismaDevServer.experimental.streams.serverUrl;
+
+    if (localStreamsServerUrl) {
+      await seedObservabilityStreamsImpl({
+        streamsServerUrl: localStreamsServerUrl,
+      });
+
+      const stopObservabilityTicker = startObservabilityStreamTickerImpl({
+        streamsServerUrl: localStreamsServerUrl,
+      });
+
+      cleanupCallbacks.push(() => stopObservabilityTicker());
+    }
+  } catch (error) {
+    await Promise.allSettled(
+      cleanupCallbacks.map((cleanupCallback) =>
+        Promise.resolve().then(() => cleanupCallback()),
+      ),
+    );
+    throw error;
+  }
 
   const postgresClient = createPostgresClient(
     prismaDevServer.database.connectionString,

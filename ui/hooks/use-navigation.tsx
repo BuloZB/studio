@@ -110,8 +110,13 @@ function buildNavigationTableNames(introspection: AdapterIntrospectResult) {
  * implement a specialized hook instead.
  */
 function useNavigationInternal() {
-  const { adapter, hasDatabase, navigationTableNamesCollection, streamsUrl } =
-    useStudio();
+  const {
+    adapter,
+    hasDatabase,
+    hasQueryInsights,
+    navigationTableNamesCollection,
+    streamsUrl,
+  } = useStudio();
   const { data: introspection, isFetching } = useIntrospection();
 
   const { schemas } = introspection;
@@ -165,6 +170,7 @@ function useNavigationInternal() {
   const [filterParam, setFilterParam] = useQueryState("filter", {
     defaultValue: defaults.filter,
   });
+  const [migrationParam, setMigrationParam] = useQueryState("migration");
   const [pageIndexParam, setPageIndexParam] = useQueryState("pageIndex", {
     defaultValue: defaults.pageIndex,
   });
@@ -188,6 +194,8 @@ function useNavigationInternal() {
     useQueryState("aggregations");
   const [streamFollowParam, setStreamFollowParam] =
     useQueryState("streamFollow");
+  const [streamObserveParam, setStreamObserveParam] =
+    useQueryState("streamObserve");
   const [streamRoutingKeyParam, setStreamRoutingKeyParam] =
     useQueryState("streamRoutingKey");
   const [streamParam, setStreamParam] = useQueryState("stream");
@@ -216,7 +224,11 @@ function useNavigationInternal() {
       ? activeTables[resolvedTableParam]
       : undefined;
   const resolvedViewParam =
-    !hasDatabase && typeof streamsUrl === "string" ? "stream" : viewParam;
+    !hasDatabase && typeof streamsUrl === "string"
+      ? "stream"
+      : viewParam === "queries" && !hasQueryInsights
+        ? defaults.view
+        : viewParam;
 
   const metadata = useMemo(
     () => ({
@@ -232,6 +244,7 @@ function useNavigationInternal() {
     metadata,
     createUrl,
     filterParam,
+    migrationParam,
     pageIndexParam,
     pageSizeParam,
     pinParam,
@@ -242,11 +255,13 @@ function useNavigationInternal() {
     streamAggregationRangeParam,
     streamAggregationsParam,
     streamFollowParam,
+    streamObserveParam,
     streamRoutingKeyParam,
     streamParam,
     tableParam,
     viewParam: resolvedViewParam,
     setFilterParam: setFilterParam as NuqsSetNullableValue<string>,
+    setMigrationParam: setMigrationParam as NuqsSetNullableValue<string>,
     setPageIndexParam: setPageIndexParam as NuqsSetNullableValue<string>,
     setPageSizeParam: setPageSizeParam as NuqsSetNullableValue<string>,
     setPinParam: setPinParam as NuqsSetNullableValue<string>,
@@ -259,6 +274,8 @@ function useNavigationInternal() {
     setStreamAggregationsParam:
       setStreamAggregationsParam as NuqsSetNullableValue<string>,
     setStreamFollowParam: setStreamFollowParam as NuqsSetNullableValue<string>,
+    setStreamObserveParam:
+      setStreamObserveParam as NuqsSetNullableValue<string>,
     setStreamRoutingKeyParam:
       setStreamRoutingKeyParam as NuqsSetNullableValue<string>,
     setStreamParam: setStreamParam as NuqsSetNullableValue<string>,

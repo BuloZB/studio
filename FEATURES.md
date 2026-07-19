@@ -5,10 +5,18 @@
 Studio connects to PostgreSQL, MySQL, and SQLite through a unified adapter contract, so the same UI works across supported engines.
 Each adapter handles introspection, querying, inserts, updates, and deletes while exposing capabilities that drive conditional UI behavior.
 
+## PostgreSQL SSL Connection Parameters
+
+PostgreSQL connection strings can carry the standard libpq SSL parameters `sslrootcert`, `sslcert`, `sslkey`, `sslpassword`, and `sslmode`, so Studio hosts can connect to TLS-protected databases such as managed Postgres with custom CAs or mutual TLS.
+The `createPostgresJSConnectionConfig` helper in `@prisma/studio-core/data/postgresjs` consumes these parameters client-side — reading certificate files from disk and mapping the mode to TLS verification behavior — and strips the SSL file parameters (`sslrootcert`, `sslcert`, `sslkey`, `sslpassword`), plus any accompanying `sslmode`, from the connection string so postgres.js does not forward them to the server as runtime configuration parameters.
+A standalone `sslmode` without SSL file parameters is left in the connection string untouched, since postgres.js consumes it natively.
+
 ## Live Introspection and Schema Discovery
 
 Studio introspects connected databases to build schemas, tables, columns, relationships, filter operators, and timezone metadata.
 This gives users an accurate live model of the database and keeps table navigation grounded in current structure.
+A fresh Studio mount performs this discovery once, while actual adapter or database-availability changes invalidate cached metadata and load it again.
+The MySQL adapter detects MariaDB servers via `select version()` and switches to a MariaDB-compatible tables query that returns one row per column and groups the result on the client, so introspection works on all supported MariaDB versions where `json_arrayagg` or JSON casts are unavailable and cannot be truncated by `group_concat_max_len`.
 
 ## Deployable Prisma Postgres Demo
 
@@ -49,6 +57,12 @@ Users can share links into a precise Studio state, and stale params are resolved
 The sidebar provides schema switching and active-table navigation so users can move through large databases quickly.
 Table-name metadata is normalized into local TanStack DB state and queried live for responsive list rendering.
 
+## Resizable Sidebar
+
+The sidebar width is user-resizable from a drag handle on its right edge, so long table and stream names stay fully readable instead of being cut off at a fixed width.
+The handle also supports keyboard resizing (`ArrowLeft` / `ArrowRight`, plus `Home` / `End` for the extremes), and the width is clamped to a 192px minimum and a 520px maximum, additionally capped at 60% of the viewport width on narrow screens, so both the sidebar and the main content stay usable.
+The chosen width is persisted in local Studio UI state, so it survives navigation and reopening Studio; the default width is unchanged until the user resizes.
+
 ## Sidebar Table Name Search
 
 Table filtering is available inline in the Tables header, so search is there when needed without permanent UI clutter.
@@ -62,7 +76,6 @@ Studio can optionally connect to a Prisma Streams server alongside the database 
 The list reuses the same compact navigation shell as table browsing, loads live stream names from the configured Streams base URL, and disappears entirely when Studio is embedded without Streams configured.
 Streams also reuse the same inline filter disclosure as tables, so the `Streams` header can open an in-place search field with the same keyboard flow, real-time local filtering, and `ArrowUp` / `ArrowDown` plus `Enter` selection behavior instead of introducing a second sidebar filtering pattern.
 That shared hover affordance also adds a stream-list refresh button beside search, so the current Streams server can be queried again on demand without opening the field first or adding permanent chrome to the sidebar header.
-The sidebar width is also user-resizable from a drag handle on its right edge, and that width is persisted in Studio UI state so wider stream names stay readable as you move around the app or reopen it later.
 
 ## Prisma WAL Table History
 
@@ -74,6 +87,8 @@ When that deep link lands on a `state-protocol` WAL stream, the stream view also
 
 Selecting a stream opens a dedicated event log view in the main pane instead of the table grid.
 The view uses TanStack DB-backed infinite scroll to load the newest events first, shows summary columns for time, key, indexed fields, preview text, and payload size, and lets users expand one event at a time to inspect the full formatted content.
+For `evlog` streams, the preview column summarizes request-shaped events as readable request lines such as `GET /product/acme-mug`, adding status and diagnostic text for failures or warning/error events while keeping the full JSON available in the expanded row.
+For `otel-traces` streams, preview text summarizes spans from semantic OTEL fields, including request path, service, duration, and error status when available, so trace rows can be scanned without opening raw span JSON.
 When a stream advertises a search schema with a primary timestamp field, the event log uses that configured timestamp for the row time column before falling back to legacy timestamp field names. This keeps schema-driven streams like GH Archive from showing `Unknown time` even when their canonical timestamp lives under a non-legacy field such as `eventTime`.
 The stream chrome now mirrors the table view more closely: the header is reserved for controls, while a fixed footer summary box shows the latest event count and total logical payload bytes in human-readable units.
 That footer count uses grouped digits like `12,345 events`, while the byte total stays compact by scaling units such as `MB` and `GB` instead of showing a raw comma-separated byte count.
@@ -96,6 +111,14 @@ The remote and local storage sections now use compact collapsible ledger boxes i
 The same popover also splits search coverage from run accelerators, so users can tell whether bundled companions are fully accelerating search right now and whether cross-segment run indexes, including the routing-key lexicon family used for alphabetical key listing, are caught up, backfilling, or simply waiting for the next full 16-segment span. Local retained-data totals also avoid double-counting the pending tail by treating it as a breakdown of retained WAL rather than a second additive bucket, and the local cache ledger now includes companion-cache bytes plus any routing-key lexicon cache bytes so the visible row totals line up with the Streams-reported local total. Request accounting uses the same compact ledger style with explicit `GET`, `HEAD`, and `LIST` rows rolling up into `Reads total`, separate `Puts total`, and a final request total for the current Streams node. The segment artifact row also includes a `Ready for upload` sub-line that shows how many local segments exist beyond the uploaded segment count. The `Segment data` row in object storage now also shows `Average segment size` in MB and `Average segment compression`, with each metric falling back to `Unavailable` when there are no uploaded segment objects to derive from.
 When the Streams server also advertises node-wide cache limits through `GET /v1/server/_details`, Studio annotates the local cache rows with faint shared-cap labels such as `(512 MiB cap)` instead of pretending those limits belong to one stream. Segment and companion caches show those caps inline, while Routing and Exact caches share one centered disk-cache cap marker across both rows because they draw from the same server-side run-cache budget.
 When Streams does not expose a meaningful lag duration for a coverage or accelerator row, Studio simply omits that lag text instead of rendering distracting placeholders like `Unavailable behind`.
+
+## Stream Request Observability
+
+When the active stream profile is `evlog` or `otel-traces`, expanded event rows can open a request details sheet from a correlated request ID, trace ID, or span ID.
+Studio uses the active stream details' explicit `observability.request` descriptor to pair event and trace streams, instead of guessing from the first opposite-profile stream.
+The sheet calls the Streams `POST /v1/observe/request` endpoint through Studio's `/api/streams` proxy, keeps the lookup in the URL hash as `streamObserve`, and renders a merged timeline, trace waterfall, primary evlog event, root-cause fields, service calls, span errors, source stream labels, and partial-result warnings from the single response.
+If only one observability stream is available, the sheet still opens and explains the missing event or trace side instead of presenting an empty result as complete.
+The local `ppg-dev` demo now seeds paired `app-events` and `app-traces` streams with realistic successes, failures, slow requests, event-only requests, trace-only requests, and deeper multi-service production-style traces, then appends fresh correlated requests on a timer so request details, Tail mode, and refresh behavior can be validated against a live local Streams server. `pnpm demo:ppg:seed-scale -- --streams-url <url>` appends deterministic scale data for local performance checks.
 
 ## Stream Search and Match Highlighting
 
@@ -133,15 +156,41 @@ Cards keep a fixed width inside their own horizontal scroller, the header toggle
 
 Studio includes a schema graph view with table nodes, column metadata, and detected foreign-key relationships labeled as 1:1 or 1:n.
 The visualizer now runs ELK auto-layout with component-aware spacing so disconnected tables do not collapse into the same visual band, and orthogonal step edges leave clearer corridors between nodes.
-Dragged node positions persist when you leave and return to the same schema view, and a header-level `Reset layout` action re-applies the current ELK baseline when you want to discard manual placement.
+Dragged node positions are remembered in localStorage-backed UI state scoped per schema, so a manual arrangement survives leaving the visualizer, switching views, and full page reloads; tables without a remembered position (for example newly created ones) fall back to ELK auto-layout. A header-level `Reset layout` action re-applies the current ELK baseline and forgets the stored manual placement.
 Users can pan/zoom, inspect key and nullable markers, and jump from a node directly to that table’s data view.
+
+## Query Insights
+
+Embedders can optionally provide live query snapshots through Studio's BFF bridge, and Studio shows them in a dedicated `Queries` view directly under the schema visualizer.
+The view plots live query throughput and average latency from recent snapshot rows and successive snapshot updates, defaulting to the most recent 5 minutes with quick switches for 1 minute, 15 minutes, and 1 hour. The chart summary and query list follow the selected time window, including row execution and rows-returned counters, while historical first-snapshot rows render as latency context points instead of fake throughput spikes or cumulative totals. Live throughput points use one-second buckets at the query's observed time, live lines stay connected across short bursts, long unmeasured gaps break into separate segments, isolated samples render as points, and hovering the plot shows exact readings.
+Users can filter by touched table, sort by operational signals, and open a detail sheet for SQL, metrics, query metadata, and optional recommendations. The detail sheet includes compact copy actions for the original SQL and the full recommendation payload, so users can move either into an editor, issue, or follow-up prompt without manually selecting long text.
+The table and recommendation text label returned-row volume as `Rows Returned`; optional provider read-work estimates stay separate so rows returned are not described as reads.
+When Studio's shared `llm` hook is available, the query table adds an Analysis column that analyzes newly observed query groups in the background, one at a time, and stops automatic work after the first five groups. Rows show a running indicator, a manual Analyze action, and a completed all-good, info, or warning icon; the detail sheet uses the same analysis queue for manual recommendations. Without that hook, the AI analysis UI is hidden.
+If an embedder does not provide query insights, Studio hides the `Queries` menu item and stale `view=queries` URLs fall back to the normal default view.
+
+## Prisma Next Migrations View
+
+When the connected database carries a Prisma Next migration ledger (`prisma_contract.ledger`) with at least one applied migration, Studio shows a `Migrations` item in the main navigation; databases without the `prisma_contract` schema, without the ledger table, or with an empty ledger never see the entry.
+The view lists every applied migration newest-first — name, apply time, operation count, a destructive-change marker, and compact `+`/`−`/`~` chips summarizing what each migration did to models, fields, enums, and indexes.
+Selecting a migration renders a visual, UML-style diff on a pan/zoom canvas built from the contract snapshots Prisma Next records alongside the ledger (a content-addressed store joined onto each migration's origin/destination hashes): added models appear as green cards, removed models red with strikethrough, changed models amber with per-field detail rows (type, nullability, and default transitions rendered as before → after), plus enum cards and relation edges; untouched neighbor models render dimmed for context, and an `All models` toggle expands the canvas to the migration's full schema, including unchanged enums.
+A model only turns amber when its own table changed (fields or indexes); gaining a back-relation whose foreign key lives in the other table keeps the model dimmed while the new relation edge is emphasized instead.
+Switching between migrations morphs the canvas rather than rebuilding it: surviving model cards glide to their new layout positions and the camera refits over ~500ms, so stepping through adjacent migrations reads as one continuous story.
+Collapsible detail panels show the executed SQL (per-operation class and exact statements) and a Prisma-schema-style diff of the migration — a unified, color-coded line diff of the before/after schema with long unchanged runs collapsed into click-to-expand folds — and the split between canvas and panel is resizable from a drag handle. The migration header floats over the canvas top edge so the diagram gets the full content height. The selected migration is tracked in the URL so views can be shared and revisited.
+When the ledger has migrations but no contract snapshots to diff (a database written by an older Prisma Next), the list and SQL panel keep working and the canvas is replaced by a notice asking to update Prisma Next.
 
 ## Data Grid Browsing
 
 Table data is shown in a grid with server-backed pagination, filtered-row counts, loading feedback, and explicit empty states.
 The footer keeps page navigation, a page jump field, a fixed rows-per-page dropdown, and infinite-scroll mode in one compact control group, so users can either jump directly to a page, switch page density from a known preset, or turn on lazy-loading without leaving the grid.
 Rows-per-page and infinite-scroll preferences persist across tables through local storage, while the known filtered-row count keeps the footer stable during page transitions for the same filtered result set. Infinite scroll preloads before the hard bottom edge, always appends in fixed 25-row chunks regardless of the paginated page-size setting, keeps filling tall viewports until the grid is actually scrollable, and appends new rows in place without snapping the grid back to the top.
+Row editing, deletion, and insertion operate on the same loaded row window the grid displays, so with infinite scroll enabled staged cell edits save correctly even for rows loaded beyond the first 25-row batch.
 Rapid sort and filter changes keep the latest request authoritative, and superseded table reads are aborted so a slower older result cannot overwrite the visible grid.
+Wide tables virtualize their non-pinned columns so only the columns near the viewport are mounted. The virtualization window follows horizontal scrolling synchronously and grid re-renders only happen when the set of mounted columns actually changes, which keeps horizontal scrolling smooth, makes the last column reachable, and lets cell focus changes reveal off-screen columns without fighting user-initiated scrolling.
+
+## Table Row Count Display
+
+The grid footer shows the total number of rows in the current result set as a muted, thousands-separated label (for example `4,725 rows`), so users can gauge table size at a glance without paging to the end.
+The label uses the same filtered count that drives pagination, so it reflects active filters and row search, and it stays exact for counts beyond JavaScript's safe integer range. When the adapter cannot count rows, the label is hidden instead of showing a misleading number.
 
 ## PostgreSQL Stored Temporal Values
 
@@ -162,6 +211,12 @@ Header cells surface model metadata such as primary key, foreign key, required, 
 Resize handles stay centered on the real column boundary with a forgiving full-height hit target, so resizing does not require pixel-perfect pointer placement.
 Column widths stay bounded to practical defaults, and long text or JSON values respect that same max width by clipping with a standard ellipsis instead of forcing the grid wider than the chosen size.
 Pinning and drag reordering now animate the affected header and visible cells with a short CSS transition, so column layout changes read as motion instead of abrupt jumps. Sticky header layering also keeps the top-left selector corner above the scrolling row-selector column, so the empty spacer cell stays visible while the grid moves underneath it.
+
+## Readable PostgreSQL Type Names
+
+Wherever Studio displays a column's datatype (table header cells, the filter column picker, and the schema visualizer), native PostgreSQL catalog names are shown as their common SQL aliases: `int8` appears as `bigint`, `int4` as `integer`, `int2` as `smallint`, `float8` as `double precision`, `float4` as `real`, `bool` as `boolean`, and `bpchar` as `char`, with array types keeping their `[]` suffix (`int8[]` shows as `bigint[]`).
+Short catalog names already in common use (such as `timestamptz` and `varchar`) stay as-is, and user-defined types and other dialects are untouched.
+The mapping is display-only, so filtering, editing, and SQL generation keep using the real catalog names.
 
 ## Inline Table Filters
 
@@ -199,6 +254,7 @@ Matching substrings are highlighted in the grid, and timeout errors explain that
 
 The SQL view uses a full CodeMirror editor with dialect-aware syntax highlighting and schema-aware autocomplete for schemas, tables, and columns.
 Autocomplete is built from live introspection metadata, so suggestions track the current database structure without manual refresh workflows.
+The active schema selector is also used as the default SQL namespace, so unqualified queries like `select * from order_items` run and lint against the selected schema instead of always resolving through `public`.
 PostgreSQL, MySQL, and SQLite linting runs asynchronously through guarded parse/plan `EXPLAIN` paths and shows inline diagnostics while preserving the normal run/cancel query flow.
 The same lint transport also validates saved table-level SQL filter pills in the background, so Studio reuses one dialect-aware SQL validation path for both the SQL editor and advanced inline table filters.
 Keyboard execution supports `Cmd/Ctrl+Enter`, and in multi-statement scripts it runs only the top-level statement at the current cursor.
@@ -211,15 +267,17 @@ Embedders can optionally provide the same async `llm` hook on `Studio`, and the 
 When configured, the SQL toolbar adds an inline prompt plus `Generate SQL` action that writes the generated statement into the editor without running it, then focuses the editor so `Cmd/Ctrl+Enter` or the existing `Run SQL` button can execute it as the next explicit step.
 The prompt context is built from live introspection metadata, including the concrete database engine, active SQL dialect, and available schema/table/column names, but it excludes row data and query results.
 AI responses must satisfy a strict JSON contract with generated SQL, a short rationale, and a yes/no visualization decision, and Studio retries once if the model returns malformed JSON.
+When SQL lint validation is available, generated SQL is validated before it is shown; invalid generated SQL is sent back to the model with the lint diagnostic so Studio can show a corrected statement instead of exposing a broken draft.
 Submitted AI requests are also stored locally in the SQL-view TanStack collection, so an empty focused prompt field can browse older requests with `ArrowUp` / `ArrowDown` as placeholder-only previews before committing one back into the input for editing.
 Provider output-limit failures are surfaced explicitly and can feed into the next JSON-correction prompt instead of showing up as a vague parse failure. The visualization decision from AI generation is also preserved so the later manual run can still auto-chart graph-worthy results.
+If AI-generated SQL fails when the user runs it, Studio sends the original request, failed SQL, and database error back to the model, then replaces the editor with a corrected query without auto-running it.
 
 ## AI SQL Result Visualization
 
-When SQL query results are visible and `llm` is configured, Studio can also turn the returned rows into an in-grid Chart.js visualization.
+When SQL query results are visible and `llm` is configured, Studio can also turn the returned rows into an in-grid Bklit visualization.
 The visualization uses a minimal summary-row trigger labeled `Visualize data with AI`, right-aligned beside the query result count, and mounts the generated chart above the SQL result headers inside the shared scrollable grid without a regenerate control.
-Studio sends the executed SQL, the concrete database engine, and the full result row set to the model, and when the result came from `Generate SQL with AI` it also includes the original natural-language request for extra visualization context. The model is asked for a pure Chart.js JSON config with no external libraries, and Studio mounts the returned chart directly with Chart.js.
-Mounted charts sit inside a white in-grid band that stays tied to the visible result viewport instead of the total table width, while the chart itself stays centered and width-clamped between 300px and 1200px so wide result grids do not force giant charts.
+Studio sends the executed SQL, the concrete database engine, and the full result row set to the model, and when the result came from `Generate SQL with AI` it also includes the original natural-language request for extra visualization context. The model is asked for a strict Studio-owned Bklit chart config for `bar`, `horizontal-bar`, `line`, `pie`, `doughnut`, or stacked `bar`/`horizontal-bar` charts; arbitrary Chart.js-style options, callbacks, plugins, and non-primitive row values are rejected before rendering.
+Mounted charts sit inside an in-grid background band that stays tied to the visible result viewport instead of the total table width, while the chart itself stays centered and width-clamped between 300px and 1200px so wide result grids do not force giant charts.
 When SQL is generated through AI, the same model call also decides whether the expected result is graph-worthy; if it says yes, Studio auto-generates the chart after the user manually runs that generated SQL instead of waiting for a separate chart button click.
 If another query starts running, the visualization resets immediately so stale charts do not persist across changing result sets. Visualization generation also retries up to two times on malformed JSON, invalid chart configs, or explicit provider output-limit failures.
 
@@ -242,7 +300,10 @@ Exports can copy directly to the clipboard or save to disk, include column heade
 
 Editable cells open popover editors with datatype-specific controls for raw text, numeric, boolean, enum, JSON/array, date, and time values.
 Save/cancel keyboard behavior is standardized, and null/default/empty semantics are handled explicitly per input type.
+Native PostgreSQL arrays can be edited from JSON-style array values and are always written back as explicit `array[...]` constructor expressions with an array-type cast, so writes never depend on driver-specific array parameter serialization.
 PostgreSQL user-defined enum arrays also persist through that same staged-edit flow, with schema-qualified casts emitted in a form PostgreSQL accepts for `enum[]` writes.
+SQLite columns with date-like declared types (`date`, `datetime`, `timestamp`) are edited as text and stored as-is despite their NUMERIC affinity, matching how SQLite itself stores date strings.
+Numeric editing never writes `NaN`: input is only coerced to a number when it actually parses as one, and non-numeric text is passed through so SQLite NUMERIC-affinity columns keep it as text while stricter databases reject it with a clear error.
 
 ## Staged Multi-Cell Editing
 
@@ -298,3 +359,4 @@ Theme values are applied across Studio roots and portal surfaces at runtime, and
 Theme root classes and variables are synchronized before paint, and supported browsers wrap explicit theme changes in a view transition, so switching appearance modes does not flash a partially updated mix of old and new tokens.
 Palette theme toggles stay interactive in browsers that expose the View Transition API, so `Match system theme` can be turned both on and off in place without closing the palette or getting stuck on the system setting.
 Shared buttons, inputs, filter pills, visualizer nodes, confirmation dialogs, staged-cell overlays, grid cells, compact pagination controls, and the Prisma navigation mark resolve readable dark-mode treatment from those theme tokens and assets, so toolbar controls, page pickers, inline filters, schema cards, prompts, staged edits, table values, and the Studio brand chrome stay visible on dark host surfaces.
+When Studio runs in a full-page shell whose document has no host-authored background, it also syncs the resolved theme to the document root (`color-scheme` plus Studio's background color), so overscroll areas and the space behind Studio's rounded corners match the active theme instead of staying white. Host pages that style their own `<html>`/`<body>` background are left untouched.

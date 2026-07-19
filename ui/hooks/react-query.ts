@@ -9,6 +9,8 @@ type MutationKey =
 type QueryKey =
   | [] // all
   | ["introspection"]
+  | ["prisma-next-migrations", "contract-table", boolean]
+  | ["prisma-next-migrations-probe"]
   | ["stream-details", string]
   | ["stream-routing-keys", string, "stream", string, "prefix", string]
   | ["streams-server-details", string]
@@ -25,6 +27,17 @@ type QueryKey =
   | ["stream-search-metadata", string]
   | ["stream-routing-key-read-metadata", string]
   | ["stream-search-head", string, number, string, string, string]
+  | [
+      "stream-observe-request",
+      string,
+      "events",
+      string,
+      "traces",
+      string,
+      "lookup",
+      string,
+      string,
+    ]
   | ["streams", string]
   | [
       "streams",

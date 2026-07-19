@@ -14,6 +14,7 @@ import {
 } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
 import { useIntrospection } from "../hooks/use-introspection";
+import { useHasMigrationHistory } from "../hooks/use-migrations";
 import { useNavigation } from "../hooks/use-navigation";
 import { useNavigationTableList } from "../hooks/use-navigation-table-list";
 import { useStreams } from "../hooks/use-streams";
@@ -41,11 +42,17 @@ type NavigationProps = {
 export function Navigation({ className }: NavigationProps) {
   const { metadata, createUrl, streamParam, viewParam, schemaParam } =
     useNavigation();
-  const { hasDatabase, isDarkMode, navigationWidth, setNavigationWidth } =
-    useStudio();
+  const {
+    hasDatabase,
+    hasQueryInsights,
+    isDarkMode,
+    navigationWidth,
+    setNavigationWidth,
+  } = useStudio();
   const { isFetching, activeTable } = metadata;
   const { errorState, hasResolvedIntrospection, isRefetching, refetch } =
     useIntrospection();
+  const hasMigrationHistory = useHasMigrationHistory();
   const [tableSearchUiState, setTableSearchUiState] =
     useUiState<TableSearchUiState>(TABLE_SEARCH_UI_STATE_KEY, {
       isOpen: false,
@@ -513,16 +520,45 @@ export function Navigation({ className }: NavigationProps) {
               isActive={viewParam === "schema"}
               className={navigationItemClasses}
             >
-              <a href={createUrl({ viewParam: "schema" })} className="w-full">
+              <a
+                href={createUrl({
+                  schemaParam,
+                  viewParam: "schema",
+                })}
+                className="w-full"
+              >
                 Visualizer
               </a>
             </Navigation.Item>
+            {hasQueryInsights && (
+              <Navigation.Item
+                asChild
+                isActive={viewParam === "queries"}
+                className={navigationItemClasses}
+              >
+                <a
+                  href={createUrl({
+                    schemaParam,
+                    viewParam: "queries",
+                  })}
+                  className="w-full"
+                >
+                  Queries
+                </a>
+              </Navigation.Item>
+            )}
             <Navigation.Item
               asChild
               isActive={viewParam === "console"}
               className={navigationItemClasses}
             >
-              <a href={createUrl({ viewParam: "console" })} className="w-full">
+              <a
+                href={createUrl({
+                  schemaParam,
+                  viewParam: "console",
+                })}
+                className="w-full"
+              >
                 Console
               </a>
             </Navigation.Item>
@@ -531,10 +567,34 @@ export function Navigation({ className }: NavigationProps) {
               isActive={viewParam === "sql"}
               className={navigationItemClasses}
             >
-              <a href={createUrl({ viewParam: "sql" })} className="w-full">
+              <a
+                href={createUrl({
+                  schemaParam,
+                  viewParam: "sql",
+                })}
+                className="w-full"
+              >
                 SQL
               </a>
             </Navigation.Item>
+            {hasMigrationHistory && (
+              <Navigation.Item
+                asChild
+                isActive={viewParam === "migrations"}
+                className={navigationItemClasses}
+              >
+                <a
+                  href={createUrl({
+                    schemaParam,
+                    viewParam: "migrations",
+                  })}
+                  className="w-full"
+                  data-testid="navigation-migrations-item"
+                >
+                  Migrations
+                </a>
+              </Navigation.Item>
+            )}
           </Navigation.Block>
 
           <Navigation.SearchableBlock

@@ -17,7 +17,7 @@ interface NavigationMockValue {
   setSchemaParam: () => Promise<URLSearchParams>;
   setTableParam: () => Promise<URLSearchParams>;
   streamParam: string | null;
-  viewParam: "table" | "schema" | "console" | "sql" | "stream";
+  viewParam: "table" | "schema" | "queries" | "console" | "sql" | "stream";
 }
 
 interface IntrospectionMockValue {
@@ -56,6 +56,7 @@ interface StreamsMockValue {
 interface StudioMockValue {
   hasDatabase: boolean;
   isDarkMode: boolean;
+  hasQueryInsights: boolean;
   navigationWidth: number;
   setNavigationWidth: (width: number) => void;
 }
@@ -63,6 +64,7 @@ interface StudioMockValue {
 const useNavigationMock = vi.fn<() => NavigationMockValue>();
 const useIntrospectionMock = vi.fn<() => IntrospectionMockValue>();
 const useStreamsMock = vi.fn<() => StreamsMockValue>();
+const useHasMigrationHistoryMock = vi.fn<() => boolean>(() => false);
 const useStudioMock = vi.fn<() => StudioMockValue>();
 const uiStateValues = new Map<string, unknown>();
 const setNavigationWidthMock = vi.fn<(width: number) => void>();
@@ -75,6 +77,10 @@ vi.mock("../hooks/use-navigation", () => ({
 
 vi.mock("../hooks/use-introspection", () => ({
   useIntrospection: () => useIntrospectionMock(),
+}));
+
+vi.mock("../hooks/use-migrations", () => ({
+  useHasMigrationHistory: () => useHasMigrationHistoryMock(),
 }));
 
 vi.mock("../hooks/use-streams", () => ({
@@ -259,6 +265,7 @@ function getSearchBlock(
 describe("Navigation", () => {
   beforeEach(() => {
     isDarkMode = false;
+    useHasMigrationHistoryMock.mockReturnValue(false);
     setNavigationWidthMock.mockReset();
     refetchIntrospectionMock.mockReset();
     refetchStreamsMock.mockReset();
@@ -266,6 +273,7 @@ describe("Navigation", () => {
     refetchStreamsMock.mockResolvedValue(undefined);
     useStudioMock.mockImplementation(() => ({
       hasDatabase: true,
+      hasQueryInsights: false,
       isDarkMode,
       navigationWidth: 192,
       setNavigationWidth: setNavigationWidthMock,
@@ -430,6 +438,7 @@ describe("Navigation", () => {
   it("hides schema and table navigation when the session has no database", () => {
     useStudioMock.mockImplementation(() => ({
       hasDatabase: false,
+      hasQueryInsights: false,
       isDarkMode,
       navigationWidth: 192,
       setNavigationWidth: setNavigationWidthMock,
@@ -461,6 +470,7 @@ describe("Navigation", () => {
 
     expect(container.textContent).not.toContain("Tables");
     expect(container.textContent).not.toContain("Visualizer");
+    expect(container.textContent).not.toContain("Queries");
     expect(container.textContent).not.toContain("Console");
     expect(container.textContent).not.toContain("SQL");
     expect(container.querySelector('button[aria-label="Schema"]')).toBeNull();
@@ -469,6 +479,182 @@ describe("Navigation", () => {
     ).toBeNull();
     expect(container.textContent).toContain("Streams");
     expect(container.textContent).toContain("audit-log");
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows Queries directly under Visualizer only when query insights are configured", () => {
+    const withoutQueriesContainer = document.createElement("div");
+    document.body.appendChild(withoutQueriesContainer);
+    const withoutQueriesRoot = createRoot(withoutQueriesContainer);
+
+    act(() => {
+      withoutQueriesRoot.render(<Navigation />);
+    });
+
+    expect(withoutQueriesContainer.textContent).toContain("Visualizer");
+    expect(withoutQueriesContainer.textContent).not.toContain("Queries");
+
+    act(() => {
+      withoutQueriesRoot.unmount();
+    });
+    withoutQueriesContainer.remove();
+
+    useStudioMock.mockImplementation(() => ({
+      hasDatabase: true,
+      hasQueryInsights: true,
+      isDarkMode,
+      navigationWidth: 192,
+      setNavigationWidth: setNavigationWidthMock,
+    }));
+    useNavigationMock.mockReturnValue({
+      createUrl(values: Record<string, string>) {
+        return `#${Object.entries(values)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("&")}`;
+      },
+      metadata: {
+        activeTable: { name: "organizations", schema: "public" },
+        isFetching: false,
+      },
+      schemaParam: "public",
+      setSchemaParam: vi.fn(() => Promise.resolve(new URLSearchParams())),
+      setTableParam: vi.fn(() => Promise.resolve(new URLSearchParams())),
+      streamParam: null,
+      viewParam: "queries",
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<Navigation />);
+    });
+
+    const studioLinks = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>(
+        'nav[aria-label="Studio"] a',
+      ),
+    ).map((link) => link.textContent?.trim());
+
+    expect(studioLinks.slice(0, 2)).toEqual(["Visualizer", "Queries"]);
+
+    const queriesLink = Array.from(container.querySelectorAll("a")).find(
+      (link) => link.textContent?.trim() === "Queries",
+    );
+
+    expect(queriesLink?.getAttribute("href")).toBe(
+      "#schemaParam=public&viewParam=queries",
+    );
+    expect(queriesLink?.getAttribute("data-active")).toBe("true");
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows Migrations only when the ledger holds applied migrations", () => {
+    // useHasMigrationHistory resolves false for a missing prisma_contract
+    // schema, a missing ledger table, or an empty ledger — all three hide
+    // the item (mock default from beforeEach).
+    const withoutHistoryContainer = document.createElement("div");
+    document.body.appendChild(withoutHistoryContainer);
+    const withoutHistoryRoot = createRoot(withoutHistoryContainer);
+
+    act(() => {
+      withoutHistoryRoot.render(<Navigation />);
+    });
+
+    expect(withoutHistoryContainer.textContent).not.toContain("Migrations");
+
+    act(() => {
+      withoutHistoryRoot.unmount();
+    });
+    withoutHistoryContainer.remove();
+
+    useHasMigrationHistoryMock.mockReturnValue(true);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<Navigation />);
+    });
+
+    const migrationsLink = container.querySelector(
+      '[data-testid="navigation-migrations-item"]',
+    );
+
+    expect(migrationsLink).not.toBeNull();
+    expect(migrationsLink?.getAttribute("href")).toBe(
+      "#schemaParam=public&viewParam=migrations",
+    );
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("preserves selected schema when navigating between Studio views", () => {
+    useStudioMock.mockImplementation(() => ({
+      hasDatabase: true,
+      hasQueryInsights: true,
+      isDarkMode,
+      navigationWidth: 192,
+      setNavigationWidth: setNavigationWidthMock,
+    }));
+    useNavigationMock.mockReturnValue({
+      createUrl(values: Record<string, string>) {
+        return `#${Object.entries(values)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("&")}`;
+      },
+      metadata: {
+        activeTable: { name: "order_items", schema: "test_app" },
+        isFetching: false,
+      },
+      schemaParam: "test_app",
+      setSchemaParam: vi.fn(() => Promise.resolve(new URLSearchParams())),
+      setTableParam: vi.fn(() => Promise.resolve(new URLSearchParams())),
+      streamParam: null,
+      viewParam: "sql",
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<Navigation />);
+    });
+
+    const studioLinksByText = new Map(
+      Array.from(
+        container.querySelectorAll<HTMLAnchorElement>(
+          'nav[aria-label="Studio"] a',
+        ),
+      ).map((link) => [link.textContent?.trim(), link.getAttribute("href")]),
+    );
+
+    expect(studioLinksByText.get("Visualizer")).toBe(
+      "#schemaParam=test_app&viewParam=schema",
+    );
+    expect(studioLinksByText.get("Queries")).toBe(
+      "#schemaParam=test_app&viewParam=queries",
+    );
+    expect(studioLinksByText.get("Console")).toBe(
+      "#schemaParam=test_app&viewParam=console",
+    );
+    expect(studioLinksByText.get("SQL")).toBe(
+      "#schemaParam=test_app&viewParam=sql",
+    );
 
     act(() => {
       root.unmount();

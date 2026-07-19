@@ -44,6 +44,7 @@ const STUDIO_UI_STATE_ID = "studio-ui-state";
 const STUDIO_UI_STORAGE_KEY = "prisma-studio-ui-state-v1";
 const SQL_EDITOR_STATE_ID = "studio-sql-editor-state";
 const SQL_EDITOR_STORAGE_KEY = "prisma-studio-sql-editor-state-v1";
+const UI_PERSISTENT_STATE_STORAGE_KEY = "prisma-studio-persistent-ui-state-v1";
 const DEFAULT_TABLE_PAGE_SIZE = 25;
 export const DEFAULT_NAVIGATION_WIDTH = 192;
 export const MIN_NAVIGATION_WIDTH = 192;
@@ -255,9 +256,12 @@ interface StudioContextValue {
   adapter: Adapter;
   hasDatabase: boolean;
   llm?: StudioLlm;
+  queryInsights?: Adapter["queryInsights"];
   streamsUrl?: string;
   hasAiFilter: boolean;
+  hasAiQueryRecommendations: boolean;
   hasAiSql: boolean;
+  hasQueryInsights: boolean;
   requestLlm: (request: StudioLlmRequest) => Promise<string>;
   onEvent: (event: StudioEventBase) => void;
   operationEvents: StudioOperationEvent[];
@@ -277,6 +281,7 @@ interface StudioContextValue {
   tableUiStateCollection: Collection<TableUiState, string | number>;
   tableQueryMetaCollection: Collection<TableQueryMetaState, string | number>;
   uiLocalStateCollection: Collection<StudioLocalUiState, string | number>;
+  uiPersistentStateCollection: Collection<StudioLocalUiState, string | number>;
   sqlEditorStateCollection: Collection<SqlEditorState, string | number>;
   navigationTableNamesCollection: Collection<
     NavigationTableNameState,
@@ -314,6 +319,7 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
   } = props;
 
   const queryClientRef = useRef(new QueryClient());
+  const previousDatabaseConfigRef = useRef({ adapter, hasDatabase });
   const signatureRef = useRef(shortUUID.generate());
   const rowsCollectionCacheRef = useRef(new Map<string, unknown>());
   const tableQueryExecutionStateCacheRef = useRef(
@@ -390,6 +396,20 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
       { collectionName: "studio-local-ui-state" },
     ),
   );
+  const uiPersistentStateCollectionRef = useRef(
+    instrumentTanStackCollectionMutations(
+      createCollection(
+        localStorageCollectionOptions<StudioLocalUiState>({
+          id: "studio-persistent-ui-state",
+          storageKey: UI_PERSISTENT_STATE_STORAGE_KEY,
+          getKey(item) {
+            return item.id;
+          },
+        }),
+      ),
+      { collectionName: "studio-persistent-ui-state" },
+    ),
+  );
   const sqlEditorStateCollectionRef = useRef(
     instrumentTanStackCollectionMutations(
       createCollection(
@@ -425,6 +445,7 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
   const tableUiStateCollection = tableUiStateCollectionRef.current;
   const tableQueryMetaCollection = tableQueryMetaCollectionRef.current;
   const uiLocalStateCollection = uiLocalStateCollectionRef.current;
+  const uiPersistentStateCollection = uiPersistentStateCollectionRef.current;
   const sqlEditorStateCollection = sqlEditorStateCollectionRef.current;
   const navigationTableNamesCollection =
     navigationTableNamesCollectionRef.current;
@@ -523,7 +544,17 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
   }, [studioUiCollection]);
 
   useEffect(() => {
-    // if the adapter has been changed, then we need to reload
+    const previousDatabaseConfig = previousDatabaseConfigRef.current;
+    previousDatabaseConfigRef.current = { adapter, hasDatabase };
+
+    if (
+      previousDatabaseConfig.adapter === adapter &&
+      previousDatabaseConfig.hasDatabase === hasDatabase
+    ) {
+      return;
+    }
+
+    // If the database configuration changed, then we need to reload.
     for (const state of tableQueryExecutionStateCacheRef.current.values()) {
       state.activeController?.abort();
     }
@@ -813,7 +844,10 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
   );
 
   const hasAiFilter = typeof llm === "function";
+  const hasAiQueryRecommendations = typeof llm === "function";
   const hasAiSql = typeof llm === "function";
+  const queryInsights = adapter.queryInsights;
+  const hasQueryInsights = typeof queryInsights?.getSnapshot === "function";
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -823,9 +857,12 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
           adapter,
           hasDatabase,
           llm,
+          queryInsights,
           streamsUrl,
           hasAiFilter,
+          hasAiQueryRecommendations,
           hasAiSql,
+          hasQueryInsights,
           requestLlm,
           onEvent,
           operationEvents,
@@ -845,6 +882,7 @@ export function StudioContextProvider(props: StudioContextProviderProps) {
           tableUiStateCollection,
           tableQueryMetaCollection,
           uiLocalStateCollection,
+          uiPersistentStateCollection,
           sqlEditorStateCollection,
           navigationTableNamesCollection,
           getOrCreateRowsCollection,

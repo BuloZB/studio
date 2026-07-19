@@ -1,5 +1,63 @@
 # @prisma/studio-core
 
+## 0.33.0
+
+### Minor Changes
+
+- c341072: # Fix duplicate startup introspection requests
+
+  Avoid cancelling and repeating introspection requests when Studio initially mounts.
+
+## 0.32.0
+
+### Minor Changes
+
+- ed30e6e: Add a Prisma Next Migrations view. When the connected database carries a Prisma Next migration ledger (`prisma_contract.ledger`) with at least one applied migration, Studio shows a Migrations navigation item with a newest-first timeline of every applied migration — name, apply time, operation count, destructive-change markers, and compact `+`/`−`/`~` chips summarizing what each migration changed.
+
+  Selecting a migration renders a visual, FigJam-style diff canvas built from the contract snapshots Prisma Next records alongside the ledger: added, removed, and changed models as color-coded cards with per-field before → after details (type, nullability, defaults, primary keys), enum cards, and relation edges. An All models toggle expands to the migration's full schema, switching migrations morphs the canvas over ~500ms instead of rebuilding it, and the selected migration is URL-addressable.
+
+  Collapsible detail panels behind a drag-resizable split show the executed SQL per operation and a Prisma-schema-style line diff of the before/after schema, with long unchanged runs collapsed into click-to-expand folds.
+
+  Databases whose ledger predates contract snapshots keep the timeline and SQL panel and show an update notice in place of the canvas. Requires a database migrated with a Prisma Next version that records contract snapshots for the visual and schema diffs.
+
+## 0.31.2
+
+### Patch Changes
+
+- ff11835: Fix PostgreSQL text array cell edits when queries are compiled with inline values.
+
+## 0.31.1
+
+### Patch Changes
+
+- e1583e5: Improve observability stream previews with concise evlog request summaries and otel span summaries.
+
+## 0.31.0
+
+### Minor Changes
+
+- a241cd8: Add stream request observability
+
+## 0.30.0
+
+### Minor Changes
+
+- 9d45420: Add Query Details copy actions
+
+## 0.29.0
+
+### Minor Changes
+
+- f05f7b9: Fix schema-aware SQL execution, linting, and Studio navigation so SQL queries and diagnostics resolve unqualified identifiers against the selected schema instead of always relying on the adapter default schema.
+
+## 0.28.0
+
+### Minor Changes
+
+- 0e1cd4e: Expand Prisma Streams support across Studio with a dedicated stream browser, live stream aggregations, stream diagnostics, routing-key browsing, WAL history handoff from tables, and a more flexible demo/runtime setup for local and external Streams servers.
+- 15e6e11: Add an optional Studio Queries view backed by query-insights snapshots from the Studio BFF bridge.
+  Render SQL result visualizations with Studio-owned Bklit chart configs instead of Chart.js configs.
+
 ## Upcoming
 
 ### Patch Changes
